@@ -1,0 +1,94 @@
+---
+title: "b10"
+author: "Hayato Yoshioka"
+date: "2025-11-03"
+output: html_document
+---
+
+```{r}
+library(here)
+library(stringr)
+library(dplyr)
+library(purrr)
+```
+
+
+```{r}
+micro01<-readRDS(here("out",paste0("micro01.rds")))
+
+met01<-readRDS(here("out",paste0("met01.rds")))
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+extract_phylum <- function(x) {
+  m  <- regexpr("p__([^;]*)", x, perl = TRUE)
+  ph <- ifelse(m > 0, regmatches(x, m), NA_character_)
+  ph <- sub("^p__", "", ph)
+  ph[is.na(ph) | ph == "" | ph == "__"] <- NA_character_
+  ph
+}
+
+pie_df <- lapply(names(micro01), function(nm) {
+  ph <- extract_phylum(micro01[[nm]])
+  tibble(
+    sample = nm,
+    phylum = factor(ph, exclude = NULL)
+  ) |>
+    count(sample, phylum, name = "freq") |>
+    mutate(prop = freq / sum(freq))   # 合計を1にする
+}) |> bind_rows()
+
+pie_df$sample <- factor(pie_df$sample,
+                        levels = letters[1:15],
+                        labels = paste0("(", letters[1:15], ")"))
+
+ggplot(pie_df, aes(x = "", y = prop * 0.95, fill = phylum)) +  # ← 半径を5%縮める
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_wrap(~ sample, ncol = 5) +
+  theme_void() +
+  labs(fill = "", title = "Selected Microbiome (r>0.1)") +
+  theme(
+    # ファセットラベル（strip）の見やすさ＆余白
+    strip.text = element_text(size = 10, family = "serif", face = "bold",
+                              margin = margin(t = 4, r = 4, b = 6, l = 4)),  # ← 下に余白
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.placement = "outside",                     # ← ラベルをパネルの外側に
+    panel.spacing = unit(8, "pt"),                   # ← パネル間余白
+    plot.margin = margin(t = 8, r = 8, b = 8, l = 8) # ← 図全体の余白
+  )
+
+```
+
+
+```{r}
+
+library(stringr)
+
+# 各リスト要素（列）から genus 名を抽出
+micro01_genus <- lapply(micro01, function(x) {
+  g <- str_extract(x, "(?<=g__)[^;]+")
+  g <- na.omit(g)             # NA除去
+  g[g != ""]                  # 空文字も除外
+})
+
+# 列ごとにカンマで結合
+genus_combined <- sapply(micro01_genus, function(g) {
+  paste(g, collapse = ",")
+})
+
+# 結果確認
+genus_combined
+
+
+```
+
+
+```{r}
+met01<-readRDS(here("out",paste0("met01.rds")))
+```
+
+

@@ -1,0 +1,502 @@
+---
+title: "a2"
+author: "Hayato Yoshioka"
+date: "2025-11-04"
+output: html_document
+---
+
+
+###Prepare
+required packages
+```{r, message =F}
+require(BGLR)
+require(here)
+require(ggplot2)
+require(reshape2)
+require(gridExtra)
+library(readr)
+library(stringr)
+library(ggsci)
+library(RAINBOWR)
+```
+
+
+
+seed
+```{r, message =F, include=FALSE}
+
+# save or read the seed
+seedIndCsv <-  here("out","seedInd.csv")
+if (file.exists(seedIndCsv)) {
+  seedInd <- read.csv(seedIndCsv, row.names = 1, header = T)
+  seedInd <- c(as.matrix(seedInd))
+} else {
+  seedInd <- sample(1:500, 10, replace = F)
+  write.csv(x = seedInd, file =  here("out","seedInd.csv"))
+}
+
+```
+
+
+### Drought
+
+```{r}
+CD ="W4"
+```
+
+data
+```{r}
+if (CD == "W4") {
+  file_name <- "blup_drought.rds"
+} else if (CD == "W1") {
+  file_name <- "blup_control.rds"
+} else {
+  stop("CD must be W1 or W4")
+}
+
+blup_data <- readRDS(here::here("data/blup", file_name))
+
+```
+
+
+```{r}
+pheno.sel.cd <- blup_data$pheno.sel.cd
+var.id       <- blup_data$var.id
+grm.cd       <- blup_data$grm.cd
+plot.id      <- blup_data$plot.id
+com.cd       <- blup_data$com.cd
+met2.cd      <- blup_data$met2.cd
+com2.cd     <- blup_data$com2.cd
+```
+
+#####micro to 
+
+```{r}
+from <- "mrm"
+```
+
+
+
+######Metaboliteの遺伝率を計算
+
+```{r, message =F,include=FALSE}
+
+var.met.all = c()
+reslist = list()
+
+#Predict WHAT by RAINBOWR
+y <- met.cd
+var.met.all = c()
+amat <- mrm.cd
+amatZ <- design.Z(pheno.labels = rownames(amat),
+                  geno.names = rownames(amat))
+amatList <- list(Z = amatZ,
+                 K = amat)
+ZETA <- list(amat = amatList)
+X0 <- NULL
+
+# set the seed and cross-validation index
+rep5 <- rep(1:5, 1000)
+rep5 <- rep5[1:nrow(y)]
+
+for (i in 1: ncol(y)){
+#for (i in 1: 3){
+trait.name <- colnames(y)[i]
+print(c(i,"/",ncol(y)))
+print(trait.name)
+
+# make the case for the result
+resultIndex <- c("Correlation", "R2", "RMSE","varU","varE","h2")
+resultEachSeed <- matrix(NA, ncol = length(resultIndex), nrow = length(seedInd))
+colnames(resultEachSeed) <- resultIndex
+rownames(resultEachSeed) <- seedInd
+
+for (seedIndEach in 1:length(seedInd)) {
+  # seedIndEach <- 1
+  set.seed(seedInd[seedIndEach])
+  crossCvInd <- sample(rep5, nrow(y), replace = F)
+  
+  # prepare the prediction box
+  predictionDataRAINBOW <- rep(NA, nrow(y))
+  for (times in 1:5) {
+    # times <- 1
+    testInd <- crossCvInd == times
+    yNa <- y[,i]
+    yNa[testInd] <- NA
+    
+    # RAINBOWR
+    resEM3 <- EM3.cpp(y = yNa,
+                      X0 = X0, n.core = 1, 
+                      ZETA = ZETA)
+    
+    # input the predicted data
+    predictionDataRAINBOW[testInd] <- resEM3$y.pred[testInd]
+  }
+  
+  # resEM3$weights
+  predictData <- (predictionDataRAINBOW)
+  obsData <- (y[,i])
+  
+  # calculate the R2 and RMSE
+  correlation <- cor(obsData, predictData)
+  R2 <- 1 - sum((obsData - predictData) ^ 2) / sum((obsData - mean(obsData)) ^ 2)
+  RMSE <- sqrt(sum((obsData - predictData) ^ 2) / length(obsData))
+  VU <- resEM3$Vu
+  VE <- resEM3$Ve
+  h2 <-  VU/(VU+VE)
+
+  # input the result
+  resultEachSeed[seedIndEach, ] <- c(correlation, R2, RMSE,VU,VE,h2)
+}
+
+resultsum<- apply(resultEachSeed, 2, mean)
+resultsum<- as.matrix(resultsum)
+colnames(resultsum) <-trait.name
+reslist[[i]]<- resultEachSeed
+var.met.all <- cbind(var.met.all,resultsum)
+
+}
+
+rownames(var.met.all) <- resultIndex
+
+```
+
+Write
+```{r, message =F,include=FALSE}
+
+
+write.csv(var.met.all, here("out",paste0("var_met_2019_",from,CD,"_rainb.csv")))
+```
+
+
+#####metto
+
+```{r}
+from <- "metrm"
+```
+
+
+
+######Microbiome微生物の遺伝率を計算
+
+```{r, message =F,include=FALSE}
+
+
+
+#Predict WHAT by RAINBOWR
+y <- com.cd
+var.com.all = c()
+reslist = list()
+amat <- metrm.cd
+amatZ <- design.Z(pheno.labels = rownames(amat),
+                  geno.names = rownames(amat))
+amatList <- list(Z = amatZ,
+                 K = amat)
+ZETA <- list(amat = amatList)
+X0 <- NULL
+
+# set the seed and cross-validation index
+rep5 <- rep(1:5, 1000)
+rep5 <- rep5[1:nrow(y)]
+
+for (i in 1: ncol(y)){
+trait.name <- colnames(y)[i]
+print(c(i,"/",ncol(y)))
+print(trait.name)
+# make the case for the result
+resultIndex <- c("Correlation", "R2", "RMSE","varU","varE","h2")
+resultEachSeed <- matrix(NA, ncol = length(resultIndex), nrow = length(seedInd))
+colnames(resultEachSeed) <- resultIndex
+rownames(resultEachSeed) <- seedInd
+
+for (seedIndEach in 1:length(seedInd)) {
+  # seedIndEach <- 1
+  set.seed(seedInd[seedIndEach])
+  crossCvInd <- sample(rep5, nrow(y), replace = F)
+  
+  # prepare the prediction box
+  predictionDataRAINBOW <- rep(NA, nrow(y))
+  for (times in 1:5) {
+    # times <- 1
+    testInd <- crossCvInd == times
+    yNa <- y[,i]
+    yNa[testInd] <- NA
+    
+    # RAINBOWR
+    resEM3 <- EM3.cpp(y = yNa,
+                      X0 = X0, n.core = 1, 
+                      ZETA = ZETA)
+    
+    # input the predicted data
+    predictionDataRAINBOW[testInd] <- resEM3$y.pred[testInd]
+  }
+  
+  # resEM3$weights
+  predictData <- (predictionDataRAINBOW)
+  obsData <- (y[,i])
+  
+  # calculate the R2 and RMSE
+  correlation <- cor(obsData, predictData)
+  R2 <- 1 - sum((obsData - predictData) ^ 2) / sum((obsData - mean(obsData)) ^ 2)
+  RMSE <- sqrt(sum((obsData - predictData) ^ 2) / length(obsData))
+  VU <- resEM3$Vu
+  VE <- resEM3$Ve
+  h2 <-  VU/(VU+VE)
+
+  # input the result
+  resultEachSeed[seedIndEach, ] <- c(correlation, R2, RMSE,VU,VE,h2)
+}
+
+resultsum<- apply(resultEachSeed, 2, mean)
+resultsum<- as.matrix(resultsum)
+colnames(resultsum) <-trait.name
+reslist[[i]]<- resultEachSeed
+
+var.com.all <- cbind(var.com.all,resultsum)
+
+}
+
+rownames(var.com.all) <- resultIndex
+
+
+
+```
+
+
+Write
+```{r, message =F,include=FALSE}
+write.csv(var.com.all, here("out",paste0("var_com_2019_",from,CD,"_rainb.csv")))
+```
+
+
+
+###Control
+
+
+```{r}
+CD ="W1"
+```
+
+data
+```{r}
+if (CD == "W4") {
+  file_name <- "blup_drought.rds"
+} else if (CD == "W1") {
+  file_name <- "blup_control.rds"
+} else {
+  stop("CD must be W1 or W4")
+}
+
+blup_data <- readRDS(here::here("data/blup", file_name))
+
+```
+
+
+```{r}
+pheno.sel.cd <- blup_data$pheno.sel.cd
+var.id       <- blup_data$var.id
+grm.cd       <- blup_data$grm.cd
+plot.id      <- blup_data$plot.id
+com.cd       <- blup_data$com.cd
+met2.cd      <- blup_data$met2.cd
+com2.cd     <- blup_data$com2.cd
+```
+
+#####microto
+
+```{r}
+from <- "mrm"
+```
+
+
+
+######Metaboliteの遺伝率を計算
+
+```{r, message =F,include=FALSE}
+
+var.met.all = c()
+reslist = list()
+
+#Predict WHAT by RAINBOWR
+y <- met.cd
+var.met.all = c()
+amat <- mrm.cd
+amatZ <- design.Z(pheno.labels = rownames(amat),
+                  geno.names = rownames(amat))
+amatList <- list(Z = amatZ,
+                 K = amat)
+ZETA <- list(amat = amatList)
+X0 <- NULL
+
+# set the seed and cross-validation index
+rep5 <- rep(1:5, 1000)
+rep5 <- rep5[1:nrow(y)]
+
+for (i in 1: ncol(y)){
+#for (i in 1: 3){
+trait.name <- colnames(y)[i]
+print(c(i,"/",ncol(y)))
+print(trait.name)
+
+# make the case for the result
+resultIndex <- c("Correlation", "R2", "RMSE","varU","varE","h2")
+resultEachSeed <- matrix(NA, ncol = length(resultIndex), nrow = length(seedInd))
+colnames(resultEachSeed) <- resultIndex
+rownames(resultEachSeed) <- seedInd
+
+for (seedIndEach in 1:length(seedInd)) {
+  # seedIndEach <- 1
+  set.seed(seedInd[seedIndEach])
+  crossCvInd <- sample(rep5, nrow(y), replace = F)
+  
+  # prepare the prediction box
+  predictionDataRAINBOW <- rep(NA, nrow(y))
+  for (times in 1:5) {
+    # times <- 1
+    testInd <- crossCvInd == times
+    yNa <- y[,i]
+    yNa[testInd] <- NA
+    
+    # RAINBOWR
+    resEM3 <- EM3.cpp(y = yNa,
+                      X0 = X0, n.core = 1, 
+                      ZETA = ZETA)
+    
+    # input the predicted data
+    predictionDataRAINBOW[testInd] <- resEM3$y.pred[testInd]
+  }
+  
+  # resEM3$weights
+  predictData <- (predictionDataRAINBOW)
+  obsData <- (y[,i])
+  
+  # calculate the R2 and RMSE
+  correlation <- cor(obsData, predictData)
+  R2 <- 1 - sum((obsData - predictData) ^ 2) / sum((obsData - mean(obsData)) ^ 2)
+  RMSE <- sqrt(sum((obsData - predictData) ^ 2) / length(obsData))
+  VU <- resEM3$Vu
+  VE <- resEM3$Ve
+  h2 <-  VU/(VU+VE)
+
+  # input the result
+  resultEachSeed[seedIndEach, ] <- c(correlation, R2, RMSE,VU,VE,h2)
+}
+
+resultsum<- apply(resultEachSeed, 2, mean)
+resultsum<- as.matrix(resultsum)
+colnames(resultsum) <-trait.name
+reslist[[i]]<- resultEachSeed
+var.met.all <- cbind(var.met.all,resultsum)
+
+}
+
+rownames(var.met.all) <- resultIndex
+
+```
+
+Write
+```{r, message =F,include=FALSE}
+
+write.csv(var.met.all, here("out",paste0("var_met_2019_",from,CD,"_rainb.csv")))
+```
+
+
+#####metto
+
+```{r}
+from <- "metrm"
+```
+
+
+######Microbiome微生物の遺伝率を計算
+
+```{r, message =F,include=FALSE}
+
+
+
+#Predict WHAT by RAINBOWR
+y <- com.cd
+var.com.all = c()
+reslist = list()
+amat <- metrm.cd
+amatZ <- design.Z(pheno.labels = rownames(amat),
+                  geno.names = rownames(amat))
+amatList <- list(Z = amatZ,
+                 K = amat)
+ZETA <- list(amat = amatList)
+X0 <- NULL
+
+# set the seed and cross-validation index
+rep5 <- rep(1:5, 1000)
+rep5 <- rep5[1:nrow(y)]
+
+for (i in 1: ncol(y)){
+trait.name <- colnames(y)[i]
+print(c(i,"/",ncol(y)))
+print(trait.name)
+# make the case for the result
+resultIndex <- c("Correlation", "R2", "RMSE","varU","varE","h2")
+resultEachSeed <- matrix(NA, ncol = length(resultIndex), nrow = length(seedInd))
+colnames(resultEachSeed) <- resultIndex
+rownames(resultEachSeed) <- seedInd
+
+for (seedIndEach in 1:length(seedInd)) {
+  # seedIndEach <- 1
+  set.seed(seedInd[seedIndEach])
+  crossCvInd <- sample(rep5, nrow(y), replace = F)
+  
+  # prepare the prediction box
+  predictionDataRAINBOW <- rep(NA, nrow(y))
+  for (times in 1:5) {
+    # times <- 1
+    testInd <- crossCvInd == times
+    yNa <- y[,i]
+    yNa[testInd] <- NA
+    
+    # RAINBOWR
+    resEM3 <- EM3.cpp(y = yNa,
+                      X0 = X0, n.core = 1, 
+                      ZETA = ZETA)
+    
+    # input the predicted data
+    predictionDataRAINBOW[testInd] <- resEM3$y.pred[testInd]
+  }
+  
+  # resEM3$weights
+  predictData <- (predictionDataRAINBOW)
+  obsData <- (y[,i])
+  
+  # calculate the R2 and RMSE
+  correlation <- cor(obsData, predictData)
+  R2 <- 1 - sum((obsData - predictData) ^ 2) / sum((obsData - mean(obsData)) ^ 2)
+  RMSE <- sqrt(sum((obsData - predictData) ^ 2) / length(obsData))
+  VU <- resEM3$Vu
+  VE <- resEM3$Ve
+  h2 <-  VU/(VU+VE)
+
+  # input the result
+  resultEachSeed[seedIndEach, ] <- c(correlation, R2, RMSE,VU,VE,h2)
+}
+
+resultsum<- apply(resultEachSeed, 2, mean)
+resultsum<- as.matrix(resultsum)
+colnames(resultsum) <-trait.name
+reslist[[i]]<- resultEachSeed
+
+var.com.all <- cbind(var.com.all,resultsum)
+
+}
+
+rownames(var.com.all) <- resultIndex
+
+
+
+```
+
+
+Write
+```{r, message =F,include=FALSE}
+write.csv(var.com.all, here("out",paste0("var_com_2019_",from,CD,"_rainb.csv")))
+```
+
+

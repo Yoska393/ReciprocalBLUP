@@ -1,0 +1,451 @@
+---
+title: "b4_selectedblup"
+author: "Hayato Yoshioka"
+date: "2025-10-20"
+output: html_document
+---
+
+```{r}
+require(BGLR)
+require(here)
+require(ggplot2)
+require(reshape2)
+require(gridExtra)
+library(readr)
+library(stringr)
+library(ggsci)
+library(RAINBOWR)
+```
+
+
+seed
+```{r, message =F, include=FALSE}
+
+# save or read the seed
+seedIndCsv <-  here("out","seedInd.csv")
+if (file.exists(seedIndCsv)) {
+  seedInd <- read.csv(seedIndCsv, row.names = 1, header = T)
+  seedInd <- c(as.matrix(seedInd))
+} else {
+  seedInd <- sample(1:500, 10, replace = F)
+  write.csv(x = seedInd, file =  here("out","seedInd.csv"))
+}
+
+```
+
+
+```{r}
+
+for (CD in c("W1","W4")){
+
+if (CD == "W4") {
+  file_name <- "blup_drought.rds"
+} else if (CD == "W1") {
+  file_name <- "blup_control.rds"
+} else {
+  stop("CD must be W1 or W4")
+}
+
+blup_data <- readRDS(here::here("data/blup", file_name))
+
+
+pheno.sel.cd <- blup_data$pheno.sel.cd
+var.id       <- blup_data$var.id
+grm.cd       <- blup_data$grm.cd
+plot.id      <- blup_data$plot.id
+com.cd       <- blup_data$com.cd
+com2.cd      <- blup_data$com2.cd
+com2.cd      <- com2.cd[, apply(com2.cd, 2, sd) > 0]
+
+
+# threshold_metabo.rds の読み込み
+f_list <- readRDS(here::here("data", "threshold_micro.rds"))
+
+# すべてのthreshold
+thresholds <- c("-1","0", "0.1", "0.2", "0.3","0.4")
+
+# 結果を入れるリスト
+com2_sub_list <- list()
+
+for (thr in thresholds) {
+  # threshold名を組み立て
+  thr_name <- paste0("thr", thr)
+  
+  if(thr == "-1"){
+    com2.cd.sub <- com2.cd
+  } else {
+    # drought or controlで対象ベクトルを選択
+    selected_features <- if (CD == "W4") {
+      f_list[[thr_name]]$f_d
+    } else if (CD == "W1") {
+      f_list[[thr_name]]$f_c
+    } else {
+      stop("CD は 'W1' または 'W4' である必要があります。")
+    }
+    
+    # com2.cdとの共通部分
+    cols_to_keep <- intersect(colnames(com2.cd), selected_features)
+    
+    # 該当列だけ抽出
+    com2.cd.sub <- com2.cd[, cols_to_keep, drop = FALSE]
+  }
+  
+  print(dim(com2.cd.sub))
+
+  # リストに格納
+  com2_sub_list[[thr]] <- com2.cd.sub
+  
+  
+}
+
+# ✅ リストの中身を確認
+names(com2_sub_list)
+num_met<-lapply(com2_sub_list, ncol)
+
+## 1) com2_sub_list を作った後：共分散を作成
+cov_list <- lapply(com2_sub_list, function(submat) {
+  if (is.null(submat) || ncol(submat) == 0) return(NULL)
+  X <- scale(submat, center = TRUE, scale = TRUE)  # 平均中心化
+  tcrossprod(X) / (ncol(X))                     # 共分散（サンプル×サンプル）
+})
+
+## 2) サブセットと共分散をひとまとめにしたバンドルを作成
+com2_sub_cov_bundle <- list(
+  subsets = com2_sub_list,  # 各thresholdの抽出行列
+  covs    = cov_list        # 各thresholdの共分散行列
+)
+
+## 3) まとめてRDS保存
+saveRDS(com2_sub_cov_bundle, here::here("data", paste0(CD,"com2_sub_cov_bundle.rds")))
+
+## 4) （任意）しきい値ごとに個別保存したい場合
+dir.create(here::here("data", "com2_sub_cov"), recursive = TRUE, showWarnings = FALSE)
+
+for (thr in names(com2_sub_list)) {
+  submat <- com2_sub_list[[thr]]
+  covmat <- cov_list[[thr]]
+  obj <- list(submat = submat, cov = covmat)
+  thr_sanitized <- gsub("\\.", "_", thr)  # ファイル名にドットがあるときのケア
+  saveRDS(obj, here::here("data", "com2_sub_cov", paste0("com2_", thr_sanitized, ".rds")))
+}
+
+## 5) 確認（例）
+names(com2_sub_cov_bundle$subsets)
+lapply(com2_sub_cov_bundle$covs, function(x) if (is.null(x)) NA else dim(x))
+
+
+
+
+####Phenotyope Rainbowr
+
+
+
+make_random_subsets_with_cov <- function(met_mat, num_met, nrep = 10, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  # num_met を named ベクトルにしておく（list の場合も対応）
+  if (is.list(num_met)) {
+    nm_names <- names(num_met)
+    counts   <- sapply(num_met, function(x) as.integer(x[1]))
+    names(counts) <- nm_names
+  } else {
+    counts <- num_met
+  }
+
+  p <- ncol(met_mat)
+  n <- nrow(met_mat)
+
+  out <- list()
+
+  for (thr in names(counts)) {
+    k <- counts[[thr]]
+    # 列数を超えないようにガード（超える場合は全列）
+    k_eff <- min(p, k)
+
+    thr_list <- vector("list", nrep)
+
+    for (i in seq_len(nrep)) {
+      # 列名から無作為抽出（非復元）
+      cols <- sample(colnames(met_mat), size = k_eff, replace = FALSE)
+
+      # サブセット
+      submat <- met_mat[, cols, drop = FALSE]
+      # 共分散（平均中心化 → tcrossprod / (n-1)）
+      X <- scale(submat, center = TRUE, scale = T)
+      covmat <- tcrossprod(X) / ncol(X)
+
+      thr_list[[i]] <- list(
+        cols   = cols,     # 使った列名
+        submat = submat,   # 抽出したサブ行列
+        cov    = covmat    # 共分散行列
+      )
+    }
+
+    out[[thr]] <- thr_list
+  }
+
+  out
+}
+
+rand_com2_list <- make_random_subsets_with_cov(
+  met_mat = com2.cd,
+  num_met = num_met,
+  nrep    = 10,
+  seed    = 123  # 再現性が欲しければ
+)
+
+
+## ========= 準備 =========
+# y: 表現型 (サンプル×traits) 例: y <- pheno.sel.cd
+# seedInd: CVの乱数シードの集合（ユーザ環境に合わせて）
+if (!exists("seedInd")) seedInd <- 1:5
+
+# 使うしきい値の並び（com2_sub_cov_bundle$covs と rand_com2_list のキーが一致している前提）
+thresholds <- intersect(names(com2_sub_cov_bundle$covs), names(rand_com2_list))
+
+thresholds <- thresholds[1:5]
+# 評価指標（今回は correlation の mean / var を集計）
+metric_name <- c("cor_mean", "cor_var")
+
+## ========= ヘルパー関数 =========
+run_rainbow_cv <- function(Kmat, y_mat, seedInd) {
+  common_ids <- intersect(rownames(Kmat), rownames(y_mat))
+  stopifnot(length(common_ids) >= 5)
+  K <- Kmat[common_ids, common_ids, drop = FALSE]
+  y <- y_mat[common_ids, , drop = FALSE]
+
+  # --- K 安全化 ---
+  if (!is.matrix(K)) K <- as.matrix(K)
+  storage.mode(K) <- "double"
+  if (any(!is.finite(K))) {
+    bad <- unique(which(!is.finite(K), arr.ind = TRUE)[,1])
+    keep <- setdiff(seq_len(nrow(K)), bad)
+    K <- K[keep, keep, drop = FALSE]
+    y <- y[rownames(K), , drop = FALSE]
+  }
+  K <- (K + t(K)) / 2
+  ev <- suppressWarnings(eigen(K, symmetric = TRUE, only.values = TRUE)$values)
+  if (min(ev, na.rm = TRUE) < 0) {
+    K <- as.matrix(Matrix::nearPD(K, keepDiag = TRUE)$mat)
+  }
+
+  # --- y 数値化（ここが今回のキモ）---
+  y <- as.data.frame(y)
+  if (ncol(y) < 2) stop("y must have ID + >=1 trait columns")
+  for (j in 2:ncol(y)) y[[j]] <- suppressWarnings(as.numeric(y[[j]]))
+
+  # 元NAが多すぎる trait は除外（必要なら閾値調整）
+  ok_trait <- vapply(2:ncol(y), function(i) sum(is.finite(y[[i]])) >= 5, logical(1))
+  if (!all(ok_trait)) {
+    y <- y[, c(TRUE, ok_trait), drop = FALSE]
+    if (ncol(y) < 2) stop("All traits removed due to too many NAs")
+  }
+
+  # --- RAINBOWR 準備 ---
+  amatZ <- RAINBOWR::design.Z(pheno.labels = rownames(y), geno.names = rownames(K))
+  ZETA  <- list(list(Z = amatZ, K = K))
+  X0    <- NULL
+
+  rep5 <- rep(1:5, length.out = nrow(y))
+  cor_by_seed <- vector("list", ncol(y) - 1)
+  names(cor_by_seed) <- colnames(y)[2:ncol(y)]
+
+  for (i in 2:ncol(y)) {
+    trait.name <- colnames(y)[i]
+    y_full <- y[[i]]
+    cor_vec <- rep(NA_real_, length(seedInd)); names(cor_vec) <- seedInd
+
+    for (s in seq_along(seedInd)) {
+      set.seed(seedInd[s])
+      crossCvInd <- sample(rep5, nrow(y), replace = FALSE)
+      pred <- rep(NA_real_, nrow(y))
+
+      for (fold in 1:5) {
+        testInd <- (crossCvInd == fold)
+        yNa <- y_full; yNa[testInd] <- NA
+        if (all(is.na(yNa))) next
+        resEM3 <- RAINBOWR::EM3.cpp(y = yNa, X0 = X0, n.core = 1, ZETA = ZETA)
+        pred[testInd] <- resEM3$y.pred[testInd]
+      }
+      if (!all(is.na(pred))) {
+        cor_vec[s] <- suppressWarnings(cor(y_full, pred, use = "pairwise.complete.obs"))
+      }
+    }
+    cor_by_seed[[trait.name]] <- cor_vec
+  }
+
+  do.call(rbind, lapply(names(cor_by_seed), function(tr) {
+    x <- cor_by_seed[[tr]]
+    data.frame(trait = tr,
+               cor_mean = mean(x, na.rm = TRUE),
+               cor_var  = stats::var(x,  na.rm = TRUE),
+               row.names = NULL)
+  }))
+}
+
+## ========= 実験本体（10回） =========
+n_repeat <- 10
+
+# しきい値 × 繰り返し で、固定K/ランダムKの結果を入れるリスト
+cor_summary_fixed <- setNames(vector("list", length(thresholds)), thresholds)
+cor_summary_rand  <- setNames(vector("list", length(thresholds)), thresholds)
+
+for (thr in thresholds) {
+  cor_summary_fixed[[thr]] <- vector("list", n_repeat)
+  cor_summary_rand[[thr]]  <- vector("list", n_repeat)
+}
+
+for (rep_idx in 1:n_repeat) {
+  message("==== Repeat: ", rep_idx, " / ", n_repeat, " ====")
+
+  for (thr in thresholds) {
+    # --- K（固定）と K（ランダム）を取得 ---
+    K_fixed <- com2_sub_cov_bundle$covs[[thr]]
+    K_rand  <- rand_com2_list[[thr]][[rep_idx]]$cov
+    
+    # 型と数値化（疎行列→dense）
+    K_fixed <- as.matrix(K_fixed); storage.mode(K_fixed) <- "double"
+    K_rand  <- as.matrix(K_rand);  storage.mode(K_rand)  <- "double"
+
+
+
+    if (is.null(K_fixed) || is.null(K_rand)) {
+      warning("K is NULL at thr=", thr, ", rep=", rep_idx, ". Skip.")
+      next
+    }
+
+    # --- サンプル合わせ（固定KとランダムKと表現型の共通サンプルを使う） ---
+# --- 共通サンプル ---
+    common_ids <- Reduce(intersect, list(rownames(pheno.sel.cd),
+                                     rownames(K_fixed),
+                                     rownames(K_rand)))
+
+    if (length(common_ids) < 5) { # 最低限の数を確保（適宜変更）
+      warning("Too few common samples at thr=", thr, ", rep=", rep_idx, ". Skip.")
+      next
+    }
+    y_sub      <- pheno.sel.cd[common_ids, , drop = FALSE]
+    K_fixed_al <- K_fixed[common_ids, common_ids, drop = FALSE]
+    K_rand_al  <- K_rand [common_ids, common_ids,  drop = FALSE]
+
+    # --- RAINBOWR CV を実行：固定K ---
+    res_fixed <- run_rainbow_cv(K_fixed_al, y_sub, seedInd)
+    # --- RAINBOWR CV を実行：ランダムK ---
+    res_rand  <- run_rainbow_cv(K_rand_al,  y_sub, seedInd)
+
+    # 保存（trait × {cor_mean, cor_var} の data.frame）
+    cor_summary_fixed[[thr]][[rep_idx]] <- res_fixed
+    cor_summary_rand [[thr]][[rep_idx]] <- res_rand
+  }
+}
+
+## ========= しきい値ごとに10回分をまとめ（平均・分散をさらに要約したければ） =========
+# 例：各しきい値 × trait で cor_mean の平均・分散を出す
+aggregate_cor_summary <- function(summary_list) {
+  # summary_list[[thr]][[rep]]: data.frame(trait, cor_mean, cor_var)
+  out <- lapply(summary_list, function(rep_list) {
+    # traitで bind
+    all_df <- Reduce(function(a, b) merge(a, b, by = "trait", all = TRUE,
+                                          suffixes = c("", "")),
+                     rep_list)
+    # 列名が trait, cor_mean, cor_var, cor_mean, cor_var, ... になるので整理
+    # repごとの cor_mean だけを抜き出して集計
+    mean_cols <- grep("^cor_mean$", names(all_df))
+    var_cols  <- grep("^cor_var$",  names(all_df))
+    # 列名が重複しないよう merge ではなく rbind＋split の方が安全だが、
+    # シンプルに lapply で積み上げる方式に変更
+    NULL
+  })
+  # 上は柔軟に作るならもう少し手当が必要。実務では下の安全版を推奨。
+  # 安全版（しきい値ごとに rbind→split→集計）
+}
+
+# 安全版：しきい値ごとに「10回の結果を縦結合 → traitごとに cor_mean の mean/var」
+summarize_over_repeats <- function(summary_list) {
+  lapply(summary_list, function(rep_list) {
+    # rep_list は長さ10の list（各要素は data.frame: trait, cor_mean, cor_var）
+    df <- do.call(rbind, lapply(seq_along(rep_list), function(r) {
+      cbind(rep = r, rep_list[[r]])
+    }))
+    # traitごとに cor_mean の平均・分散
+    agg <- do.call(rbind, lapply(split(df, df$trait), function(dd) {
+      data.frame(
+        trait         = unique(dd$trait),
+        cor_mean_mean = mean(dd$cor_mean, na.rm = TRUE),
+        cor_mean_var  = var(dd$cor_mean,  na.rm = TRUE),
+        cor_var_mean  = mean(dd$cor_var,  na.rm = TRUE),  # 参考：各rep内の var の平均
+        n_rep         = nrow(dd)
+      )
+    }))
+    rownames(agg) <- NULL
+    agg
+  })
+}
+
+cor_fixed_summary10 <- summarize_over_repeats(cor_summary_fixed)
+cor_rand_summary10  <- summarize_over_repeats(cor_summary_rand)
+
+## ========= 保存 =========
+saveRDS(
+  list(
+    per_repeat = list(fixed = cor_summary_fixed, rand = cor_summary_rand),
+    summary10  = list(fixed = cor_fixed_summary10, rand = cor_rand_summary10)
+  ),
+  here::here("out", paste0("rainbow_cor_summary_", CD, "com.rds"))
+)
+}
+```
+
+
+
+read
+```{r, message =F,include=FALSE}
+cor_all<-readRDS(here("out",paste0("rainbow_cor_summary_", CD, "com.rds")))
+
+cor_all$summary10$fixed$`-1`
+
+cor_all$summary10$rand$`-1`
+
+
+```
+
+
+
+```{r}
+## =========================
+## 普通のGBLUP（grm.cd）でCV
+## =========================
+
+# 1) サンプルIDを合わせる
+rownames(grm.cd)<-rownames(pheno.sel.cd)
+colnames(grm.cd)<-rownames(pheno.sel.cd)
+common_ids <- intersect(rownames(grm.cd), rownames(pheno.sel.cd))
+stopifnot(length(common_ids) >= 5)
+
+K_g <- grm.cd[common_ids, common_ids, drop = FALSE]
+y_g <- pheno.sel.cd[common_ids, , drop = FALSE]
+
+# 2) K の安全化（対称化・半正定性の確保）
+K_g <- as.matrix(K_g); storage.mode(K_g) <- "double"
+K_g <- (K_g + t(K_g)) / 2
+ev  <- suppressWarnings(eigen(K_g, symmetric = TRUE, only.values = TRUE)$values)
+if (min(ev, na.rm = TRUE) < 0) {
+  K_g <- as.matrix(Matrix::nearPD(K_g, keepDiag = TRUE)$mat)
+}
+
+# 3) 既存の run_rainbow_cv() をそのまま使用
+#    （seedInd はあなたのコードで準備済み）
+res_gblup <- run_rainbow_cv(Kmat = K_g, y_mat = y_g, seedInd = seedInd)
+
+# 4) 保存
+dir.create(here::here("out", "gblup_cv", CD), recursive = TRUE, showWarnings = FALSE)
+saveRDS(res_gblup, here::here("out", paste0("gblup_cv_", CD, ".rds")))
+# write.csv(res_gblup, here::here("out", "gblup_cv", CD, paste0("gblup_", CD, ".csv")),
+#           row.names = FALSE)
+
+# 5) （任意）既存の結果オブジェクトにマージして、後で一緒に図示/比較しやすく
+#    例：固定K（しきい値）との横並び比較のために名前を付けてリスト化
+gblup_summary <- res_gblup # 列: trait, cor_mean, cor_var
+
+```
+

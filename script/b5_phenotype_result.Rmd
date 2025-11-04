@@ -1,0 +1,1069 @@
+---
+title: "b5"
+author: "Hayato Yoshioka"
+date: "2025-10-21"
+output: html_document
+---
+
+
+```{r}
+require(BGLR)
+require(here)
+require(ggplot2)
+require(reshape2)
+require(gridExtra)
+library(readr)
+library(stringr)
+library(ggsci)
+library(RAINBOWR)
+```
+
+
+
+# percent
+
+
+#METBLUP
+new (percent)
+
+```{r, fig.height=6, fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  gblup_df <- gblup_df %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  
+  # しきい値の表示用個数（ラベルの "(q*)" に出す）
+  q_counts_control <- c("100"=265, "50"=133, "25"=67, "12.5"=34, "6.25"=17)
+  q_counts_drought <- c("100"=265, "50"=133, "25"=67, "12.5"=34, "6.25"=17)
+  
+  
+
+  # 集計RDS（4 candidates: G_MET, COM_MET, BOTH, RANDOM）
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "_4cands.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2); library(purrr)
+  })
+
+  # ── しきい値キーの正規化：保存キー → 表示名 ──
+  norm_thr <- function(x){
+    x <- as.character(x)
+    x <- gsub("^12_5$", "12.5", x)
+    x <- gsub("^6_25$",  "6.25", x)
+    x
+  }
+
+  # 表示順・表示ラベル
+  thr_order  <- c("100","50","25","12.5","6.25")
+  thr_names  <- c("FULL","50","25","12.5","6.25")
+  thr_labels <- setNames(thr_order, thr_names)  # 表示文字はそのまま（必要なら書き換え）
+  
+  # 使う候補
+  candidates <- intersect(c("G_MET","COM_MET","BOTH","RANDOM"), names(cor_all$summary10))
+
+  # 候補×しきい値をまとめる関数
+  bind_summary_candidate <- function(cand_name){
+    lst <- cor_all$summary10[[cand_name]]
+    if (is.null(lst)) return(NULL)
+    # しきい値キー（保存側のキーをそのまま取り、表示用に正規化）
+    th_raw <- names(lst)
+    if (is.null(th_raw) || length(th_raw) == 0) return(NULL)
+
+    d <- map2(
+      lst, th_raw,
+      ~{
+        df <- .x
+        if (is.null(df) || nrow(df) == 0) return(NULL)
+        df %>%
+          mutate(
+            threshold_raw = .y,
+            threshold = norm_thr(.y)
+          )
+      }
+    ) %>% bind_rows()
+
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        method     = cand_name,
+        thr_label  = factor(threshold, levels = thr_order),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  # 4候補を結合
+  df_all <- map(candidates, bind_summary_candidate) %>% bind_rows()
+  if (is.null(df_all) || nrow(df_all) == 0) {
+    stop("No data to plot for ", CD)
+  }
+  
+  df_all <- df_all %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+
+
+  # yレンジ（必要に応じて調整）
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  # 例: 5番目だけ少し上に
+  if (nrow(y_ranges) >= 5) { y_ranges$ymax[5] <- 0.9 }
+  df_plot <- df_all %>% left_join(y_ranges, by = "trait")
+
+  # x軸ラベル（表示名 + 改行 + (q*)）
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # 現在使われるしきい値（存在するものに限定）
+  used_levels <- levels(df_plot$thr_label)
+  # "(q*)" を差し込む
+  thr_labels_pretty <- setNames(
+  paste0(
+    c("FULL", "50%", "25%", "12.5%", "6.25%")[match(used_levels, c("100","50","25","12.5","6.25"))],
+    "\n(", q_counts[used_levels], ")"
+  ),
+  used_levels
+)
+
+  # ---- 色・線種・形状（GBLUPも凡例に入れる）----
+    color_vals    <- c(GBLUP = "red",
+                     G_MET = "#1b9e77",
+                     COM_MET = "orange",
+                     BOTH = "#7570b3",   # 青系
+                     RANDOM = "#666666")
+  linetype_vals<- c(GBLUP = "11", G_MET = "solid", COM_MET = "solid", BOTH = "solid", RANDOM = "42")
+  shape_vals   <- c(G_MET = 16, COM_MET = 17, BOTH = 15, RANDOM = 23)
+
+  # ---- プロット ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # 各候補の線
+    geom_line(aes(group = interaction(method, trait),
+                  linetype = method, color = method)) +
+    # GBLUP の水平線（凡例に出す）
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.8,
+                 alpha = 0.8,
+                 inherit.aes = FALSE) +
+    # 各候補の点
+    geom_point(aes(shape = method, color = method), size = 1.8, stroke = 0.5, fill = "white") +
+    # エラーバー（cor_mean のSD）
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = method),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    scale_color_manual(
+      name   = "Method",
+      values = color_vals,
+      breaks = c("GBLUP", candidates),
+      labels = c("GBLUP", "MetBLUP (top:G)", "MetBLUP (top:Micro)", "MetBLUP (top:G+Micro)", "MetBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = linetype_vals,
+      breaks = c("GBLUP", candidates)
+    ) +
+    scale_shape_manual(
+      values = shape_vals,
+      breaks = candidates
+    ) +
+    guides(
+    color = guide_legend(
+      order = 1,
+      override.aes = list(
+        # ここを "solid" → linetype_vals["GBLUP"] に変更
+        linetype = c(linetype_vals["GBLUP"], linetype_vals[candidates]),
+        shape    = c(NA, shape_vals[candidates]),
+        fill     = c(NA, rep("white", length(candidates)))
+      )
+    ),
+    linetype = "none",
+    shape    = "none"
+  ) +
+    labs(
+      x = "Selection Percentage (Number of features)",
+      y = "Prediction correlation",
+      title = paste0("MetBLUP vs GBLUP: Phenotypic Prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      axis.text.x = element_text(size = 7, margin = margin(t = 10)), 
+    
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+  fname <- paste0("metblup_vs_gblup_", CD, ".png")
+  ggsave(filename = fname, plot = p, path = here::here("out","pheno"),
+  width = 8, height = 6, units = "in", dpi = 300)
+
+}
+
+#################################################################################################################
+
+
+
+#################################################################################################################
+
+
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  gblup_df <- gblup_df %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  
+  # しきい値の表示用個数（ラベルの "(q*)" に出す）
+  q_counts_control <- c("100"=1193, "50"=597, "25"=299, "12.5"=150, "6.25"=75)
+  q_counts_drought <- c("100"=893,  "50"=447, "25"=224, "12.5"=112, "6.25"=56)
+  
+  
+
+  # 集計RDS（4 candidates: G_MET, COM_MET, BOTH, RANDOM）
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "_4cands_micro.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2); library(purrr)
+  })
+
+  # ── しきい値キーの正規化：保存キー → 表示名 ──
+  norm_thr <- function(x){
+    x <- as.character(x)
+    x <- gsub("^12_5$", "12.5", x)
+    x <- gsub("^6_25$",  "6.25", x)
+    x
+  }
+
+  # 表示順・表示ラベル
+  thr_order  <- c("100","50","25","12.5","6.25")
+  thr_names  <- c("FULL","50","25","12.5","6.25")
+  thr_labels <- setNames(thr_order, thr_names)  # 表示文字はそのまま（必要なら書き換え）
+  
+  # 使う候補
+  candidates <- intersect(c("G_COM","MET_COM","BOTH","RANDOM"), names(cor_all$summary10))
+
+  # 候補×しきい値をまとめる関数
+  bind_summary_candidate <- function(cand_name){
+    lst <- cor_all$summary10[[cand_name]]
+    if (is.null(lst)) return(NULL)
+    # しきい値キー（保存側のキーをそのまま取り、表示用に正規化）
+    th_raw <- names(lst)
+    if (is.null(th_raw) || length(th_raw) == 0) return(NULL)
+
+    d <- map2(
+      lst, th_raw,
+      ~{
+        df <- .x
+        if (is.null(df) || nrow(df) == 0) return(NULL)
+        df %>%
+          mutate(
+            threshold_raw = .y,
+            threshold = norm_thr(.y)
+          )
+      }
+    ) %>% bind_rows()
+
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        method     = cand_name,
+        thr_label  = factor(threshold, levels = thr_order),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  # 4候補を結合
+  df_all <- map(candidates, bind_summary_candidate) %>% bind_rows()
+  if (is.null(df_all) || nrow(df_all) == 0) {
+    stop("No data to plot for ", CD)
+  }
+  
+  df_all <- df_all %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+
+
+  # yレンジ（必要に応じて調整）
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  # 例: 5番目だけ少し上に
+  if (nrow(y_ranges) >= 5) { y_ranges$ymax[5] <- 0.9 }
+  df_plot <- df_all %>% left_join(y_ranges, by = "trait")
+
+  # x軸ラベル（表示名 + 改行 + (q*)）
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # 現在使われるしきい値（存在するものに限定）
+  used_levels <- levels(df_plot$thr_label)
+  # "(q*)" を差し込む
+  thr_labels_pretty <- setNames(
+  paste0(
+    c("FULL", "50%", "25%", "12.5%", "6.25%")[match(used_levels, c("100","50","25","12.5","6.25"))],
+    "\n(", q_counts[used_levels], ")"
+  ),
+  used_levels
+)
+
+  # ---- 色・線種・形状（GBLUPも凡例に入れる）----
+    color_vals    <- c(GBLUP = "red",
+                     G_COM = "#1b9e77",
+                     MET_COM = "orange",
+                     BOTH = "#7570b3",   # 青系
+                     RANDOM = "#666666")
+  linetype_vals<- c(GBLUP = "11", G_COM = "solid", MET_COM = "solid", BOTH = "solid", RANDOM = "42")
+  shape_vals   <- c(G_COM = 16, MET_COM = 17, BOTH = 15, RANDOM = 23)
+
+  # ---- プロット ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # 各候補の線
+    geom_line(aes(group = interaction(method, trait),
+                  linetype = method, color = method)) +
+    # GBLUP の水平線（凡例に出す）
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.8,
+                 alpha = 0.8,
+                 inherit.aes = FALSE) +
+    # 各候補の点
+    geom_point(aes(shape = method, color = method), size = 1.8, stroke = 0.5, fill = "white") +
+    # エラーバー（cor_mean のSD）
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = method),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    scale_color_manual(
+      name   = "Method",
+      values = color_vals,
+      breaks = c("GBLUP", candidates),
+      labels = c("GBLUP", "MicroBLUP (top:G)", "MicroBLUP (top:Met)", "MicroBLUP (top:G+Met)", "MicroBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = linetype_vals,
+      breaks = c("GBLUP", candidates)
+    ) +
+    scale_shape_manual(
+      values = shape_vals,
+      breaks = candidates
+    ) +
+    guides(
+  color = guide_legend(
+    order = 1,
+    override.aes = list(
+      # ここを "solid" → linetype_vals["GBLUP"] に変更
+      linetype = c(linetype_vals["GBLUP"], linetype_vals[candidates]),
+      shape    = c(NA, shape_vals[candidates]),
+      fill     = c(NA, rep("white", length(candidates)))
+    )
+  ),
+  linetype = "none",
+  shape    = "none"
+) +
+    labs(
+      x = "Selection Percentage (Number of features)",
+      y = "Prediction correlation",
+      title = paste0("MicroBLUP vs GBLUP: Phenotypic Prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      axis.text.x = element_text(size = 7, margin = margin(t = 10)), 
+    
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+  fname <- paste0("microblup_vs_gblup_", CD, ".png")
+  ggsave(filename = fname, plot = p, path = here::here("out","pheno"),
+  width = 8, height = 6, units = "in", dpi = 300)
+
+}
+```
+
+
+
+# memo
+```{, fig.height=6,fig.width=8}
+# percent 版（micro風のラベル & q*件数更新 & 6.25%追加 & BOTHを青に）
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+
+  # ── q* 件数（Control / Drought）6.25%まで ──
+  q_counts_control <- c("100%"=1193, "50%"=597, "25%"=299, "12.5%"=150, "6.25%"=75)
+  q_counts_drought <- c("100%"=893,  "50%"=447, "25%"=224, "12.5%"=112, "6.25%"=56)
+
+  # 集計RDS（4 candidates: G_MET, COM_MET, BOTH, RANDOM）
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "_4cands_micro.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2); library(purrr)
+  })
+
+  # しきい値キーの正規化（必要なら）
+  norm_thr <- function(x){
+    x <- as.character(x)
+    x <- gsub("^12_5$", "12.5", x)
+    x <- gsub("^6_25$",  "6.25", x)
+    x
+  }
+
+  # ── 表示順・表示名（micro風：100→Full、他は%表記）6.25%まで ──
+  thr_order  <- c("100","50","25","12.5","6.25")
+  thr_labels <- c("100"="Full", "50"="50%", "25"="25%", "12.5"="12.5%", "6.25"="6.25%")
+
+  # 使う候補
+  candidates <- intersect(c("G_MET","COM_MET","BOTH","RANDOM"), names(cor_all$summary10))
+
+  # 候補×しきい値をまとめる
+  bind_summary_candidate <- function(cand_name){
+    lst <- cor_all$summary10[[cand_name]]
+    if (is.null(lst)) return(NULL)
+
+    th_raw <- names(lst)
+    if (is.null(th_raw) || length(th_raw) == 0) return(NULL)
+
+    d <- map2(
+      lst, th_raw,
+      ~{
+        df <- .x
+        if (is.null(df) || nrow(df) == 0) return(NULL)
+        df %>% mutate(
+          threshold_raw = .y,
+          threshold     = norm_thr(.y)
+        )
+      }
+    ) %>% bind_rows()
+
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>% mutate(method = cand_name)
+  }
+
+  df_all <- map(candidates, bind_summary_candidate) %>% bind_rows()
+  if (is.null(df_all) || nrow(df_all) == 0) stop("No data to plot for ", CD)
+
+  # 実データに存在するしきい値だけ使う（順序は thr_order 準拠）
+  present_thr <- intersect(thr_order, sort(unique(df_all$threshold)))
+  df_all <- df_all %>%
+    dplyr::filter(threshold %in% present_thr) %>%
+    dplyr::mutate(
+      thr_label    = factor(thr_labels[threshold], levels = thr_labels[present_thr]),
+      sd_cor_mean  = sqrt(pmax(cor_mean_var, 0))
+    )
+
+  # yレンジ（必要なら調整）
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  if (nrow(y_ranges) >= 5) { y_ranges$ymax[5] <- 0.9 }
+  df_plot <- df_all %>% dplyr::left_join(y_ranges, by = "trait")
+
+  # x軸ラベル（表示名 + 改行 + (q*)）
+  x_levels <- levels(df_plot$thr_label)
+  # x_levels は表示名なので、対応する threshold キーを復元
+  key_map <- setNames(names(thr_labels[present_thr]), unname(thr_labels[present_thr]))
+  thr_keys <- unname(key_map[x_levels])
+
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  thr_labels_pretty <- setNames(
+    paste0(x_levels, "\n(", q_counts[thr_keys], ")"),
+    x_levels
+  )
+
+  # ---- 色・線種・形状（BOTHを青 #056fd9 に変更）----
+  color_vals    <- c(GBLUP = "red",
+                     G_MET = "#1b9e77",
+                     COM_MET = "#7570b3",
+                     BOTH = "#056fd9",   # 青系
+                     RANDOM = "#666666")
+  linetype_vals <- c(GBLUP = "solid", G_MET = "22", COM_MET = "22", BOTH = "22", RANDOM = "42")
+  shape_vals    <- c(G_MET = 16, COM_MET = 17, BOTH = 15, RANDOM = 23)
+
+  # ---- プロット ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    geom_line(aes(group = interaction(method, trait),
+                  linetype = method, color = method)) +
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.6, alpha = 0.8, inherit.aes = FALSE) +
+    geom_point(aes(shape = method, color = method), size = 1.8, stroke = 0.5, fill = "white") +
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = method),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    scale_color_manual(
+      name   = "Method",
+      values = color_vals,
+      breaks = c("GBLUP", candidates),
+      labels = c("GBLUP", "G_MET", "COM_MET", "BOTH", "RANDOM")
+    ) +
+    scale_linetype_manual(values = linetype_vals, breaks = c("GBLUP", candidates)) +
+    scale_shape_manual(values = shape_vals, breaks = candidates) +
+    guides(
+      color = guide_legend(
+        order = 1,
+        override.aes = list(
+          linetype = c("solid", linetype_vals[candidates]),
+          shape    = c(NA, shape_vals[candidates]),
+          fill     = c(NA, rep("white", length(candidates)))
+        )
+      ),
+      linetype = "none",
+      shape    = "none"
+    ) +
+    labs(
+      x = "Selection Percentage (Number of features)",
+      y = "Prediction correlation",
+      title = paste0("MicroBLUP: Phenotypic prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      axis.text.x = element_text(size = 8, margin = margin(t = 10)), 
+    
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+}
+
+```
+
+
+```{, fig.height=6,fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary<-readRDS( here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  # ── CDごとの q* を定義（提示値） ──
+  q_counts_control <- c("-1"=265, "0"=148, "0.1"=94, "0.2"=36, "0.3"=19)
+  q_counts_drought <- c("-1"=265, "0"=161, "0.1"=126, "0.2"=92, "0.3"=42)
+
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, ".rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2)
+  })
+
+  # 使うしきい値と表示名
+  thr_order  <- c("-1","0","0.1","0.2","0.3")
+  thr_labels <- c("-1"="Full","0"="0","0.1"="0.1","0.2"="0.2","0.3"="0.3")
+  use_thr <- intersect(thr_order, names(cor_all$summary10$fixed))
+  use_thr <- use_thr[match(use_thr, thr_order)]
+
+  # bind
+  bind_summary <- function(x_list, type){
+    d <- lapply(use_thr, function(th){
+      df <- x_list[[th]]
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      dplyr::mutate(df, threshold = th)
+    }) %>% bind_rows()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        type = type,
+        thr_label  = factor(thr_labels[threshold], levels = thr_labels[use_thr]),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  df_fixed <- bind_summary(cor_all$summary10$fixed, "top")
+  df_rand  <- bind_summary(cor_all$summary10$rand,  "random")
+  df_all   <- bind_rows(df_fixed, df_rand)
+
+  # yレンジ
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  #y_ranges$ymin[5] <- 0; y_ranges$ymax[5] <- 0.8
+  df_plot <- dplyr::left_join(df_all, y_ranges, by = "trait")
+
+  # ── ここがポイント：x軸ラベルを「表示名 + 改行 + (q*)」にする ──
+  # factor レベル（表示される文字）を取得
+  x_levels <- levels(df_plot$thr_label)                 # 例: c("Full","0","0.1","0.2","0.3")
+  # その表示名に対応する「元のキー」を同順で用意（use_thr と同じ並び）
+  thr_keys <- use_thr                                   # 例: c("-1","0","0.1","0.2","0.3")
+  # 現在のCDに対応する q*
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # 表示用ラベルベクタ（名前=表示レベル, 値=改行つきラベル）
+  thr_labels_pretty <- setNames(paste0(x_levels, "\n(", q_counts[thr_keys], ")"), x_levels)
+
+  # plot
+  p <- ggplot(df_plot, aes(x = thr_label,
+                           y = cor_mean_mean,
+                           group = interaction(type, trait),
+                           linetype = type)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    # ★ 改行付き x ラベルを適用（Full の下に (265) などが出る）
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    labs(
+      x = expression(Threshold~(tau)~"+ Number of features"),
+      y = "Prediction correlation",   # 値の実体に合わせるならこちら
+      linetype = "K type",
+      title = paste0("MetBLUP: Phenotypic prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 10))  # ラベル2行化で余白を少し足す
+    )
+
+  print(p)
+}
+
+```
+
+
+
+Micro 
+
+```{}
+com2_sub_list<-readRDS(here::here("data", paste0(CD,"com2_sub_cov_bundle.rds")))
+
+num_met<-lapply(com2_sub_list$subsets, ncol)
+
+print(num_met)
+```
+
+
+```{, fig.height=6,fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary<-readRDS( here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  # ── CDごとの q* を定義（提示値） ──
+  q_counts_control <- c("-1"=1193, "0"=328, "0.1"=140, "0.2"=58, "0.3"=16)
+  q_counts_drought <- c("-1"=893, "0"=271, "0.1"=145, "0.2"=70, "0.3"=39)
+
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "com.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2)
+  })
+
+  # 使うしきい値と表示名
+  thr_order  <- c("-1","0","0.1","0.2","0.3")
+  thr_labels <- c("-1"="Full","0"="0","0.1"="0.1","0.2"="0.2","0.3"="0.3")
+  use_thr <- intersect(thr_order, names(cor_all$summary10$fixed))
+  use_thr <- use_thr[match(use_thr, thr_order)]
+
+  # bind
+  bind_summary <- function(x_list, type){
+    d <- lapply(use_thr, function(th){
+      df <- x_list[[th]]
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      dplyr::mutate(df, threshold = th)
+    }) %>% bind_rows()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        type = type,
+        thr_label  = factor(thr_labels[threshold], levels = thr_labels[use_thr]),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  df_fixed <- bind_summary(cor_all$summary10$fixed, "top")
+  df_rand  <- bind_summary(cor_all$summary10$rand,  "random")
+  df_all   <- bind_rows(df_fixed, df_rand)
+
+  # yレンジ
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = -0.2, ymax = 0.6)
+  y_ranges$ymin[5] <- 0; y_ranges$ymax[5] <- 0.8
+  df_plot <- dplyr::left_join(df_all, y_ranges, by = "trait")
+
+  # ── ここがポイント：x軸ラベルを「表示名 + 改行 + (q*)」にする ──
+  # factor レベル（表示される文字）を取得
+  x_levels <- levels(df_plot$thr_label)                 # 例: c("Full","0","0.1","0.2","0.3")
+  # その表示名に対応する「元のキー」を同順で用意（use_thr と同じ並び）
+  thr_keys <- use_thr                                   # 例: c("-1","0","0.1","0.2","0.3")
+  # 現在のCDに対応する q*
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # 表示用ラベルベクタ（名前=表示レベル, 値=改行つきラベル）
+  thr_labels_pretty <- setNames(paste0(x_levels, "\n(", q_counts[thr_keys], ")"), x_levels)
+
+  # plot
+  p <- ggplot(df_plot, aes(x = thr_label,
+                           y = cor_mean_mean,
+                           group = interaction(type, trait),
+                           linetype = type)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    # ★ 改行付き x ラベルを適用（Full の下に (265) などが出る）
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    labs(
+      x = expression(Threshold~(tau)~"+ Number of features"),
+      y = "Prediction correlation",   # 値の実体に合わせるならこちら
+      linetype = "K type",
+      title = paste0("MicroBLUP: Phenotypic prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 10))  # ラベル2行化で余白を少し足す
+    )
+
+  print(p)
+}
+
+```
+
+
+# classic
+
+
+```{, fig.height=6,fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  # ── CDごとの q* を定義（提示値） ──
+  q_counts_control <- c("-1"=265, "0"=148, "0.1"=94, "0.2"=36, "0.3"=19)
+  q_counts_drought <- c("-1"=265, "0"=161, "0.1"=126, "0.2"=92, "0.3"=42)
+
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, ".rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2)
+  })
+
+  # 使うしきい値と表示名
+  thr_order  <- c("-1","0","0.1","0.2","0.3")
+  thr_labels <- c("-1"="Full","0"="0","0.1"="0.1","0.2"="0.2","0.3"="0.3")
+  use_thr <- intersect(thr_order, names(cor_all$summary10$fixed))
+  use_thr <- use_thr[match(use_thr, thr_order)]
+
+  # bind
+  bind_summary <- function(x_list, type){
+    d <- lapply(use_thr, function(th){
+      df <- x_list[[th]]
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      dplyr::mutate(df, threshold = th)
+    }) %>% bind_rows()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        type = type,
+        thr_label  = factor(thr_labels[threshold], levels = thr_labels[use_thr]),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  df_fixed <- bind_summary(cor_all$summary10$fixed, "top")
+  df_rand  <- bind_summary(cor_all$summary10$rand,  "random")
+  df_all   <- bind_rows(df_fixed, df_rand)
+
+  # yレンジ
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  y_ranges$ymin[5] <- 0; y_ranges$ymax[5] <- 0.9
+  df_plot <- dplyr::left_join(df_all, y_ranges, by = "trait")
+
+  # x軸ラベル（表示名 + 改行 + (q*)）
+  x_levels <- levels(df_plot$thr_label)
+  thr_keys <- use_thr
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  thr_labels_pretty <- setNames(paste0(x_levels, "\n(", q_counts[thr_keys], ")"), x_levels)
+
+  # ---- プロット ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # MetBLUP の線（top/random）
+    geom_line(aes(group = interaction(type, trait),
+                  linetype = type, color = type)) +
+    # GBLUP をパネル端→端の水平実線で（凡例に入れる）
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.6,
+                 alpha = 0.8,     
+                 inherit.aes = FALSE) +
+    # 点は MetBLUP のみ（top=●, random=◆）
+    geom_point(aes(shape = type, color = type),
+               data = dplyr::filter(df_plot, type %in% c("top","random")),
+               size = 1.8, stroke = 0.5, fill = "white") +
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = type),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    # ---- スケール（凡例は color だけを使って統合）----
+    scale_color_manual(
+      name   = "Method",
+      values = c(GBLUP = "red", top = "black", random = "black"),
+      breaks = c("GBLUP", "top", "random"),
+      labels = c("GBLUP", "MetBLUP (top)", "MetBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = c(GBLUP = "solid", top = "22", random = "solid")
+    ) +
+    scale_shape_manual(
+      values = c(top = 16, random = 23)  # 16=●, 23=◇/◆
+    ) +
+    # ---- 凡例を1つにまとめる：color のガイドだけ残し、形と線種は override で表示 ----
+    guides(
+      color = guide_legend(
+        order = 1,
+        override.aes = list(
+          linetype = c("solid", "22", "solid"),
+          shape    = c(NA, 16, 23),
+          fill     = c(NA, "white", "white")
+        )
+      ),
+      linetype = "none",
+      shape    = "none"
+    ) +
+    labs(
+      x = expression(Threshold~(tau)~"+ Number of features"),
+      y = "Prediction correlation",
+      title = paste0("MetBLUP: Phenotypic prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      # 横グリッドだけ消す（縦グリッドは残す）
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      # （お好みで）細かい縦グリッドは消す場合は次行も有効化：
+      # panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 10)),
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+}
+
+
+
+```
+
+```{, fig.height=6,fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  # ── CDごとの q* を定義（提示値） ──
+  # ── CDごとの q* を定義（提示値） ──
+  q_counts_control <- c("-1"=1193, "0"=328, "0.1"=140, "0.2"=58, "0.3"=16)
+  q_counts_drought <- c("-1"=893, "0"=271, "0.1"=145, "0.2"=70, "0.3"=39)
+
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "com.rds")))
+
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2)
+  })
+
+  # 使うしきい値と表示名
+  thr_order  <- c("-1","0","0.1","0.2","0.3")
+  thr_labels <- c("-1"="Full","0"="0","0.1"="0.1","0.2"="0.2","0.3"="0.3")
+  use_thr <- intersect(thr_order, names(cor_all$summary10$fixed))
+  use_thr <- use_thr[match(use_thr, thr_order)]
+
+  # bind
+  bind_summary <- function(x_list, type){
+    d <- lapply(use_thr, function(th){
+      df <- x_list[[th]]
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      dplyr::mutate(df, threshold = th)
+    }) %>% bind_rows()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        type = type,
+        thr_label  = factor(thr_labels[threshold], levels = thr_labels[use_thr]),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  df_fixed <- bind_summary(cor_all$summary10$fixed, "top")
+  df_rand  <- bind_summary(cor_all$summary10$rand,  "random")
+  df_all   <- bind_rows(df_fixed, df_rand)
+
+  # yレンジ
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = -0.2, ymax = 0.8)
+  y_ranges$ymin[5] <- 0; y_ranges$ymax[5] <- 0.9
+  df_plot <- dplyr::left_join(df_all, y_ranges, by = "trait")
+
+  # x軸ラベル（表示名 + 改行 + (q*)）
+  x_levels <- levels(df_plot$thr_label)
+  thr_keys <- use_thr
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  thr_labels_pretty <- setNames(paste0(x_levels, "\n(", q_counts[thr_keys], ")"), x_levels)
+
+  # ---- プロット ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # MBLUP の線（top/random）
+    geom_line(aes(group = interaction(type, trait),
+                  linetype = type, color = type)) +
+    # GBLUP をパネル端→端の水平実線で（凡例に入れる）
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.6,
+                 alpha = 0.8,     
+                 inherit.aes = FALSE) +
+    # 点は MBLUP のみ（top=●, random=◆）
+    geom_point(aes(shape = type, color = type),
+               data = dplyr::filter(df_plot, type %in% c("top","random")),
+               size = 1.8, stroke = 0.5, fill = "white") +
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = type),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    # ---- スケール（凡例は color だけを使って統合）----
+    scale_color_manual(
+      name   = "Method",
+      values = c(GBLUP = "red", top = "black", random = "black"),
+      breaks = c("GBLUP", "top", "random"),
+      labels = c("GBLUP", "MicroBLUP (top)", "MicroBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = c(GBLUP = "solid", top = "22", random = "solid")
+    ) +
+    scale_shape_manual(
+      values = c(top = 16, random = 23)  # 16=●, 23=◇/◆
+    ) +
+    # ---- 凡例を1つにまとめる：color のガイドだけ残し、形と線種は override で表示 ----
+    guides(
+      color = guide_legend(
+        order = 1,
+        override.aes = list(
+          linetype = c("solid", "22", "solid"),
+          shape    = c(NA, 16, 23),
+          fill     = c(NA, "white", "white")
+        )
+      ),
+      linetype = "none",
+      shape    = "none"
+    ) +
+    labs(
+      x = expression(Threshold~(tau)~"+ Number of features"),
+      y = "Prediction correlation",
+      title = paste0("MicroBLUP: Phenotypic prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      # 横グリッドだけ消す（縦グリッドは残す）
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      # （お好みで）細かい縦グリッドは消す場合は次行も有効化：
+      # panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 10)),
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+}
+
+
+
+```
+
+
