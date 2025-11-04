@@ -48,6 +48,6 @@ This repository provides the full set of scripts and data used in the **Reciproc
 The materials here are shared for **transparency, reproducibility, and reuse**.  
 Researchers are encouraged to adapt and extend the code for related analyses.
 
-If you use this repository, please cite the associated paper or this GitHub project.
+If you use this repository, please cite the associated paper
 
 ---
