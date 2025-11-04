@@ -5,4 +5,4 @@ Reciprocal BLUP for multi-omics data: integrating genome, metabolome, and microb
   <img src="blup_abstract.png" width="600" >
 </div>
 
-Here we store the script used for the study.
+Here we store the script and data used for the study.
