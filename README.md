@@ -21,7 +21,7 @@ Folder: [`data_reciprocal/`](data_reciprocal/)
 ---
 
 ## 📜 Code Description
-Folder: [`script/`](script/)
+Folder: [`script/`](script_recip/)
 
 | Script | Description |
 |---------|--------------|
