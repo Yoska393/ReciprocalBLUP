@@ -1,4 +1,4 @@
-# ReciprocalBLUP
+# Reciprocal BLUP
 **Reciprocal BLUP for multi-omics data:** integrating genome, metabolome, and microbiome in soybean
 
 <div style="display: flex; align-items: center; gap: 10px;">
