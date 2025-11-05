@@ -1,0 +1,420 @@
+---
+title: "b5"
+author: "Hayato Yoshioka"
+date: "2025-10-21"
+output: html_document
+---
+
+
+```{r}
+require(BGLR)
+require(here)
+require(ggplot2)
+require(reshape2)
+require(gridExtra)
+library(readr)
+library(stringr)
+library(ggsci)
+library(RAINBOWR)
+```
+
+
+
+# percent
+
+
+#MET MICRO BLUP PLOT
+new (percent)
+
+```{r, fig.height=6, fig.width=8}
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  gblup_df <- gblup_df %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  # Number of features for displaying thresholds (shown in label "(q*)")
+  q_counts_control <- c("100"=265, "50"=133, "25"=67, "12.5"=34, "6.25"=17)
+  q_counts_drought <- c("100"=265, "50"=133, "25"=67, "12.5"=34, "6.25"=17)
+  
+  # Aggregated RDS (4 candidates: G_MET, COM_MET, BOTH, RANDOM)
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "_4cands.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2); library(purrr)
+  })
+
+  # ── Normalize threshold key: saved key → display name ──
+  norm_thr <- function(x){
+    x <- as.character(x)
+    x <- gsub("^12_5$", "12.5", x)
+    x <- gsub("^6_25$",  "6.25", x)
+    x
+  }
+
+  # Display order and labels
+  thr_order  <- c("100","50","25","12.5","6.25")
+  thr_names  <- c("FULL","50","25","12.5","6.25")
+  thr_labels <- setNames(thr_order, thr_names)  # Display text as is (modify if needed)
+  
+  # Candidates to use
+  candidates <- intersect(c("G_MET","COM_MET","BOTH","RANDOM"), names(cor_all$summary10))
+
+  # Function to combine candidate × threshold
+  bind_summary_candidate <- function(cand_name){
+    lst <- cor_all$summary10[[cand_name]]
+    if (is.null(lst)) return(NULL)
+    # Threshold key (use saved key as-is, then normalize for display)
+    th_raw <- names(lst)
+    if (is.null(th_raw) || length(th_raw) == 0) return(NULL)
+
+    d <- map2(
+      lst, th_raw,
+      ~{
+        df <- .x
+        if (is.null(df) || nrow(df) == 0) return(NULL)
+        df %>%
+          mutate(
+            threshold_raw = .y,
+            threshold = norm_thr(.y)
+          )
+      }
+    ) %>% bind_rows()
+
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        method     = cand_name,
+        thr_label  = factor(threshold, levels = thr_order),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  # Combine 4 candidates
+  df_all <- map(candidates, bind_summary_candidate) %>% bind_rows()
+  if (is.null(df_all) || nrow(df_all) == 0) {
+    stop("No data to plot for ", CD)
+  }
+  
+  df_all <- df_all %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  # y-range (adjust as needed)
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  # Example: slightly higher for the 5th one
+  if (nrow(y_ranges) >= 5) { y_ranges$ymax[5] <- 0.9 }
+  df_plot <- df_all %>% left_join(y_ranges, by = "trait")
+
+  # x-axis labels (display name + line break + (q*))
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # Use only existing thresholds
+  used_levels <- levels(df_plot$thr_label)
+  # Insert "(q*)"
+  thr_labels_pretty <- setNames(
+  paste0(
+    c("FULL", "50%", "25%", "12.5%", "6.25%")[match(used_levels, c("100","50","25","12.5","6.25"))],
+    "\n(", q_counts[used_levels], ")"
+  ),
+  used_levels
+)
+
+  # ---- Colors, line types, and shapes (include GBLUP in legend) ----
+    color_vals    <- c(GBLUP = "red",
+                     G_MET = "#1b9e77",
+                     COM_MET = "orange",
+                     BOTH = "#7570b3",   # Blue tone
+                     RANDOM = "#666666")
+  linetype_vals<- c(GBLUP = "11", G_MET = "solid", COM_MET = "solid", BOTH = "solid", RANDOM = "42")
+  shape_vals   <- c(G_MET = 16, COM_MET = 17, BOTH = 15, RANDOM = 23)
+
+  # ---- Plot ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # Lines for each candidate
+    geom_line(aes(group = interaction(method, trait),
+                  linetype = method, color = method)) +
+    # Horizontal line for GBLUP (included in legend)
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.8,
+                 alpha = 0.8,
+                 inherit.aes = FALSE) +
+    # Points for each candidate
+    geom_point(aes(shape = method, color = method), size = 1.8, stroke = 0.5, fill = "white") +
+    # Error bars (SD of cor_mean)
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = method),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    scale_color_manual(
+      name   = "Method",
+      values = color_vals,
+      breaks = c("GBLUP", candidates),
+      labels = c("GBLUP", "MetBLUP (top:G)", "MetBLUP (top:Micro)", "MetBLUP (top:G+Micro)", "MetBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = linetype_vals,
+      breaks = c("GBLUP", candidates)
+    ) +
+    scale_shape_manual(
+      values = shape_vals,
+      breaks = candidates
+    ) +
+    guides(
+    color = guide_legend(
+      order = 1,
+      override.aes = list(
+        # Change here from "solid" → linetype_vals["GBLUP"]
+        linetype = c(linetype_vals["GBLUP"], linetype_vals[candidates]),
+        shape    = c(NA, shape_vals[candidates]),
+        fill     = c(NA, rep("white", length(candidates)))
+      )
+    ),
+    linetype = "none",
+    shape    = "none"
+  ) +
+    labs(
+      x = "Selection Percentage (Number of features)",
+      y = "Prediction correlation",
+      title = paste0("MetBLUP vs GBLUP: Phenotypic Prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      axis.text.x = element_text(size = 7, margin = margin(t = 10)), 
+    
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+  fname <- paste0("metblup_vs_gblup_", CD, ".png")
+  ggsave(filename = fname, plot = p, path = here::here("out","pheno"),
+  width = 8, height = 6, units = "in", dpi = 300)
+
+}
+
+
+for (CD in c("W1","W4")){
+  cd <- if (CD == "W4") "Drought" else "Control"
+  
+  gblup_summary <- readRDS(here::here("out", paste0("gblup_cv_", CD, ".rds")))
+  gblup_df <- gblup_summary %>%
+    dplyr::select(trait, g_mean = cor_mean) %>%
+    dplyr::mutate(trait = as.character(trait))
+  
+  gblup_df <- gblup_df %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  # Number of features for displaying thresholds (shown in label "(q*)")
+  q_counts_control <- c("100"=1193, "50"=597, "25"=299, "12.5"=150, "6.25"=75)
+  q_counts_drought <- c("100"=893,  "50"=447, "25"=224, "12.5"=112, "6.25"=56)
+  
+  # Aggregated RDS (4 candidates: G_COM, MET_COM, BOTH, RANDOM)
+  cor_all <- readRDS(here::here("out", paste0("rainbow_cor_summary_", CD, "_4cands_micro.rds")))
+
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr); library(ggplot2); library(purrr)
+  })
+
+  # ── Normalize threshold key: saved key → display name ──
+  norm_thr <- function(x){
+    x <- as.character(x)
+    x <- gsub("^12_5$", "12.5", x)
+    x <- gsub("^6_25$",  "6.25", x)
+    x
+  }
+
+  # Display order and labels
+  thr_order  <- c("100","50","25","12.5","6.25")
+  thr_names  <- c("FULL","50","25","12.5","6.25")
+  thr_labels <- setNames(thr_order, thr_names)  # Display text as is (modify if needed)
+  
+  # Candidates to use
+  candidates <- intersect(c("G_COM","MET_COM","BOTH","RANDOM"), names(cor_all$summary10))
+
+  # Function to combine candidate × threshold
+  bind_summary_candidate <- function(cand_name){
+    lst <- cor_all$summary10[[cand_name]]
+    if (is.null(lst)) return(NULL)
+    # Threshold key (use saved key as-is, then normalize for display)
+    th_raw <- names(lst)
+    if (is.null(th_raw) || length(th_raw) == 0) return(NULL)
+
+    d <- map2(
+      lst, th_raw,
+      ~{
+        df <- .x
+        if (is.null(df) || nrow(df) == 0) return(NULL)
+        df %>%
+          mutate(
+            threshold_raw = .y,
+            threshold = norm_thr(.y)
+          )
+      }
+    ) %>% bind_rows()
+
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    d %>%
+      mutate(
+        method     = cand_name,
+        thr_label  = factor(threshold, levels = thr_order),
+        sd_cor_mean = sqrt(pmax(cor_mean_var, 0))
+      )
+  }
+
+  # Combine 4 candidates
+  df_all <- map(candidates, bind_summary_candidate) %>% bind_rows()
+  if (is.null(df_all) || nrow(df_all) == 0) {
+    stop("No data to plot for ", CD)
+  }
+  
+  df_all <- df_all %>%
+  dplyr::mutate(
+    trait = dplyr::recode(
+      trait,
+      "NumberOfTillers" = "NumberOfBranches",
+      "TillerLength_cm" = "Main_Stem_Length_cm"
+    )
+  )
+
+  # y-range (adjust as needed)
+  y_ranges <- data.frame(trait = unique(df_all$trait), ymin = 0, ymax = 0.8)
+  # Example: slightly higher for the 5th one
+  if (nrow(y_ranges) >= 5) { y_ranges$ymax[5] <- 0.9 }
+  df_plot <- df_all %>% left_join(y_ranges, by = "trait")
+
+  # x-axis labels (display name + line break + (q*))
+  q_counts <- if (cd == "Control") q_counts_control else q_counts_drought
+  # Use only existing thresholds
+  used_levels <- levels(df_plot$thr_label)
+  # Insert "(q*)"
+  thr_labels_pretty <- setNames(
+  paste0(
+    c("FULL", "50%", "25%", "12.5%", "6.25%")[match(used_levels, c("100","50","25","12.5","6.25"))],
+    "\n(", q_counts[used_levels], ")"
+  ),
+  used_levels
+)
+
+  # ---- Colors, line types, and shapes (include GBLUP in legend) ----
+    color_vals    <- c(GBLUP = "red",
+                     G_COM = "#1b9e77",
+                     MET_COM = "orange",
+                     BOTH = "#7570b3",   # Blue tone
+                     RANDOM = "#666666")
+  linetype_vals<- c(GBLUP = "11", G_COM = "solid", MET_COM = "solid", BOTH = "solid", RANDOM = "42")
+  shape_vals   <- c(G_COM = 16, MET_COM = 17, BOTH = 15, RANDOM = 23)
+
+  # ---- Plot ----
+  p <- ggplot(df_plot, aes(x = thr_label, y = cor_mean_mean)) +
+    geom_blank(aes(y = ymin)) +
+    geom_blank(aes(y = ymax)) +
+    # Lines for each candidate
+    geom_line(aes(group = interaction(method, trait),
+                  linetype = method, color = method)) +
+    # Horizontal line for GBLUP (included in legend)
+    geom_segment(data = gblup_df,
+                 aes(x = -Inf, xend = Inf, y = g_mean, yend = g_mean,
+                     linetype = "GBLUP", color = "GBLUP"),
+                 linewidth = 0.8,
+                 alpha = 0.8,
+                 inherit.aes = FALSE) +
+    # Points for each candidate
+    geom_point(aes(shape = method, color = method), size = 1.8, stroke = 0.5, fill = "white") +
+    # Error bars (SD of cor_mean)
+    geom_errorbar(aes(ymin = cor_mean_mean - sd_cor_mean,
+                      ymax = cor_mean_mean + sd_cor_mean,
+                      color = method),
+                  width = 0.15, alpha = 0.6) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_discrete(labels = thr_labels_pretty, drop = FALSE) +
+    facet_wrap(~ trait, scales = "free_y") +
+    scale_color_manual(
+      name   = "Method",
+      values = color_vals,
+      breaks = c("GBLUP", candidates),
+      labels = c("GBLUP", "MicroBLUP (top:G)", "MicroBLUP (top:Met)", "MicroBLUP (top:G+Met)", "MicroBLUP (random)")
+    ) +
+    scale_linetype_manual(
+      values = linetype_vals,
+      breaks = c("GBLUP", candidates)
+    ) +
+    scale_shape_manual(
+      values = shape_vals,
+      breaks = candidates
+    ) +
+    guides(
+  color = guide_legend(
+    order = 1,
+    override.aes = list(
+      # Change here from "solid" → linetype_vals["GBLUP"]
+      linetype = c(linetype_vals["GBLUP"], linetype_vals[candidates]),
+      shape    = c(NA, shape_vals[candidates]),
+      fill     = c(NA, rep("white", length(candidates)))
+    )
+  ),
+  linetype = "none",
+  shape    = "none"
+) +
+    labs(
+      x = "Selection Percentage (Number of features)",
+      y = "Prediction correlation",
+      title = paste0("MicroBLUP vs GBLUP: Phenotypic Prediction - ", cd)
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      aspect.ratio = 0.8,
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      axis.text.x = element_text(size = 7, margin = margin(t = 10)), 
+    
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
+    )
+
+  print(p)
+  fname <- paste0("microblup_vs_gblup_", CD, ".png")
+  ggsave(filename = fname, plot = p, path = here::here("out","pheno"),
+  width = 8, height = 6, units = "in", dpi = 300)
+
+}
+
+
+```
+
+
+
+
