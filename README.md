@@ -30,13 +30,10 @@ Folder: [`script/`](script/)
 | `b1_histgram.Rmd` | Plot histograms for selected feature distributions |
 | `b2_cor.Rmd` | Evaluate omics features prediction |
 | `b3_features.Rmd` | Summary and visualization of selected features |
-| `b4_phenotype_prediction.Rmd` | Phenotype prediction by selected metabolome features |
-| `b5_phenotype_result.Rmd` | Visualization and interpretation of phenotype prediction results |
-| `b6_pheno_micro.Rmd` | Phenotype prediction by selected microbiome features |
-| `b7_pca.Rmd` | Principal component analysis (PCA) for omics datasets |
-| `b8_percent.Rmd` | Phenotype prediction with reduced metabolome features |
-| `b9_percent_micro.Rmd` | Phenotype prediction with reduced microbiome features  |
-| `b10_micro_pie.Rmd` | Generate pie charts summarizing microbial composition |
+| `c1_percent.Rmd` | Phenotype prediction with reduced metabolome features |
+| `c2_percent_micro.Rmd` | Phenotype prediction with reduced microbiome features  |
+| `c3_phenotype_result.Rmd` | Visualization and interpretation of phenotype prediction results |
+
 
 > Each `.Rmd` file can be executed sequentially using `rmarkdown::render()`.  
 > Please ensure all required R packages are installed before running the scripts.
