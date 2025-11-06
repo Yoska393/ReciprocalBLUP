@@ -16,7 +16,7 @@ Folder: [`data_reciprocal/`](data_reciprocal/)
 | File | Description |
 |------|--------------|
 | `blup_control.rds` | Multi-omics data under control conditions |
-| `blup_drought.rds` | Multi-Omics data drought-stress conditions |
+| `blup_drought.rds` | Multi-omics data drought-stress conditions |
 
 ---
 
