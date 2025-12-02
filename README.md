@@ -47,4 +47,7 @@ Researchers are encouraged to adapt and extend the code for related analyses.
 
 If you use this repository, please cite the associated paper
 
+Reciprocal BLUP: A Predictability-Guided Multi-Omics Framework for Plant Phenotype Prediction
+([https://doi.org/10.1101/2025.11.27.690927](https://doi.org/10.1101/2025.11.27.690927))
+
 ---
